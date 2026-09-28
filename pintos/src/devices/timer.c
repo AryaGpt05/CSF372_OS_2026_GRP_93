@@ -5,11 +5,10 @@
 #include <stdio.h>
 #include "devices/pit.h"
 #include "threads/interrupt.h"
-#include "threads/synch.h"
 #include "threads/thread.h"
+#include "threads/synch.h"
   
 /** See [8254] for hardware details of the 8254 timer chip. */
-
 #if TIMER_FREQ < 19
 #error 8254 timer requires TIMER_FREQ >= 19
 #endif
@@ -157,7 +156,6 @@ timer_ndelay (int64_t ns)
 {
   real_time_delay (ns, 1000 * 1000 * 1000);
 }
-
 /** Prints timer statistics. */
 void
 timer_print_stats (void) 
@@ -234,7 +232,6 @@ real_time_sleep (int64_t num, int32_t denom)
       real_time_delay (num, denom); 
     }
 }
-
 /** Busy-wait for approximately NUM/DENOM seconds. */
 static void
 real_time_delay (int64_t num, int32_t denom)

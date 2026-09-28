@@ -27,10 +27,10 @@
 */
 
 #include "threads/synch.h"
-#include <stdio.h>
-#include <string.h>
 #include "threads/interrupt.h"
+#include <string.h>
 #include "threads/thread.h"
+#include <stdio.h>
 
 /** Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
@@ -269,9 +269,8 @@ lock_release (struct lock *lock)
 
   thread_update_priority (cur);
   lock->holder = NULL;
-
   intr_set_level (old_level);
-
+  
   sema_up (&lock->semaphore);
 }
 
@@ -339,7 +338,6 @@ void
 cond_wait (struct condition *cond, struct lock *lock) 
 {
   struct semaphore_elem waiter;
-
   ASSERT (cond != NULL);
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
@@ -375,7 +373,6 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED)
                             struct semaphore_elem, elem)->semaphore);
     }
 }
-
 /** Wakes up all threads, if any, waiting on COND (protected by
    LOCK).  LOCK must be held before calling this function.
 

@@ -80,6 +80,8 @@ typedef int tid_t;
    only because they are mutually exclusive: only a thread in the
    ready state is on the run queue, whereas only a thread in the
    blocked state is on a semaphore wait list. */
+struct lock;
+
 struct thread
   {
     /* Owned by thread.c. */
@@ -87,7 +89,12 @@ struct thread
     enum thread_status status;          /**< Thread state. */
     char name[16];                      /**< Name (for debugging purposes). */
     uint8_t *stack;                     /**< Saved stack pointer. */
-    int priority;                       /**< Priority. */
+    int priority;                       /**< Priority (effective). */
+    int base_priority;                  /**< Base priority before donation. */
+    struct list donations;              /**< List of threads donating priority to this thread. */
+    struct list_elem donation_elem;     /**< List element for holder's donations list. */
+    struct lock *wait_on_lock;          /**< Lock this thread is waiting for. */
+    int64_t wake_ticks;                 /**< Wakeup tick for timer_sleep. */
     struct list_elem allelem;           /**< List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
@@ -134,6 +141,15 @@ void thread_foreach (thread_action_func *, void *);
 
 int thread_get_priority (void);
 void thread_set_priority (int);
+
+bool thread_priority_greater (const struct list_elem *a,
+                              const struct list_elem *b,
+                              void *aux);
+void thread_test_preemption (void);
+void thread_donate_priority (struct thread *t);
+void thread_update_priority (struct thread *t);
+void thread_sleep (int64_t wake_ticks);
+void thread_wake_sleeping (int64_t current_ticks);
 
 int thread_get_nice (void);
 void thread_set_nice (int);

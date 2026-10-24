@@ -22,6 +22,7 @@ destroy_page (struct hash_elem *p_, void *aux UNUSED)
   frame_lock (p);
   if (p->frame)
     frame_free (p->frame);
+  swap_free (p);
   free (p);
 }
 
@@ -40,19 +41,33 @@ page_exit (void)
 static struct page *
 page_for_addr (const void *address)
 {
-  // TODO: Round addr down to page boundary with pg_round_down()
-  // TODO: Construct a temporary vm_page with this addr
-  // TODO: Use hash_find to look it up
-  // TODO: Return the found vm_page (or NULL if not found)
+  if (address >= PHYS_BASE)
+    return NULL;
 
+  struct thread *t = thread_current ();
+  if (t->pages == NULL)
+    return NULL;
 
-   /* -We need to determine if the program is attempting to access the stack.
-         -First, we ensure that the address is not beyond the bounds of the stack space (1 MB in this
-          case).
-         -As long as the user is attempting to acsess an address within 32 bytes (determined by the space
-          needed for a PUSHA command) of the stack pointers, we assume that the address is valid. In that
-          case, we should allocate one more stack page accordingly.
-      */
+  void *page_addr = pg_round_down (address);
+  struct page dummy;
+  dummy.addr = page_addr;
+  struct hash_elem *e = hash_find (t->pages, &dummy.hash_elem);
+  if (e != NULL)
+    return hash_entry (e, struct page, hash_elem);
+
+  /* - We need to determine if the program is attempting to access the stack.
+     - First, we ensure that the address is not beyond the bounds of the stack space (1 MB in this
+       case).
+     - As long as the user is attempting to access an address within 32 bytes (determined by the space
+       needed for a PUSHA command) of the stack pointer, we assume that the address is valid. In that
+       case, we should allocate one more stack page accordingly.
+  */
+  void *esp = t->user_esp;
+  if (address >= (void *) ((uint8_t *) PHYS_BASE - STACK_MAX)
+      && address >= (void *) ((uint8_t *) esp - 32))
+    {
+      return page_allocate (page_addr, false);
+    }
 
   return NULL;
 }
@@ -76,13 +91,17 @@ do_page_in (struct page *p)
   else if (p->file != NULL)
     {
       /* Get data from file. */
+      off_t bytes_to_read = p->file_bytes;
+      if (bytes_to_read > PGSIZE)
+        bytes_to_read = PGSIZE;
       off_t read_bytes = file_read_at (p->file, p->frame->base,
-                                        p->file_bytes, p->file_offset);
+                                        bytes_to_read, p->file_offset);
       off_t zero_bytes = PGSIZE - read_bytes;
-      memset (p->frame->base + read_bytes, 0, zero_bytes);
-      if (read_bytes != p->file_bytes)
+      if (zero_bytes > 0)
+        memset ((uint8_t *) p->frame->base + read_bytes, 0, zero_bytes);
+      if (read_bytes != bytes_to_read)
         printf ("bytes read (%"PROTd") != bytes requested (%"PROTd")\n",
-                read_bytes, p->file_bytes);
+                read_bytes, bytes_to_read);
     }
   else
     {
@@ -211,7 +230,31 @@ page_accessed_recently (struct page *p)
 struct page *
 page_allocate (void *vaddr, bool read_only)
 {
+  struct thread *t = thread_current ();
+  if (t->pages == NULL)
+    return NULL;
 
+  struct page *p = malloc (sizeof *p);
+  if (p == NULL)
+    return NULL;
+
+  p->addr = pg_round_down (vaddr);
+  p->read_only = read_only;
+  p->private = !read_only;
+  p->thread = t;
+  p->frame = NULL;
+  p->sector = (block_sector_t) -1;
+  p->file = NULL;
+  p->file_offset = 0;
+  p->file_bytes = 0;
+
+  if (hash_insert (t->pages, &p->hash_elem) != NULL)
+    {
+      free (p);
+      return NULL;
+    }
+
+  return p;
 }
 
 /* Evicts the page containing address VADDR
@@ -219,12 +262,27 @@ page_allocate (void *vaddr, bool read_only)
 void
 page_deallocate (void *vaddr)
 {
-  /* Deallocate (remove) the page for given address.
-   TODO: Implement this function.
-   - Round addr down
-   - Lookup page with page_for_address()
-   - If found, remove from hash (inside lock) and free()
-*/
+  struct thread *t = thread_current ();
+  if (t->pages == NULL)
+    return;
+
+  void *page_addr = pg_round_down (vaddr);
+  struct page dummy;
+  dummy.addr = page_addr;
+  struct hash_elem *e = hash_find (t->pages, &dummy.hash_elem);
+  if (e != NULL)
+    {
+      struct page *p = hash_entry (e, struct page, hash_elem);
+      frame_lock (p);
+      if (p->frame != NULL)
+        {
+          pagedir_clear_page (p->thread->pagedir, p->addr);
+          frame_free (p->frame);
+        }
+      swap_free (p);
+      hash_delete (t->pages, &p->hash_elem);
+      free (p);
+    }
 }
 
 /* Returns a hash value for the page that E refers to. */

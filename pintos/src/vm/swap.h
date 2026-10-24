@@ -7,5 +7,6 @@ struct page;
 void swap_init (void);
 void swap_in (struct page *);
 bool swap_out (struct page *);
+void swap_free (struct page *);
 
 #endif /* vm/swap.h */

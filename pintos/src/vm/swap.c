@@ -87,3 +87,16 @@ swap_out (struct page *p)
 
   return true;
 }
+
+/* Frees swap slot for page P if one is allocated. */
+void
+swap_free (struct page *p)
+{
+  if (p->sector != (block_sector_t) -1)
+    {
+      lock_acquire (&swap_lock);
+      bitmap_reset (swap_bitmap, p->sector / PAGE_SECTORS);
+      lock_release (&swap_lock);
+      p->sector = (block_sector_t) -1;
+    }
+}

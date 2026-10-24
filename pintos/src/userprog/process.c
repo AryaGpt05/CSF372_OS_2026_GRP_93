@@ -418,6 +418,8 @@ load (const char *cmd_line, void (**eip) (void), void **esp)
   if (!setup_stack (cmd_line, esp))
     goto done;
 
+  thread_current ()->user_esp = *esp;
+
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
 

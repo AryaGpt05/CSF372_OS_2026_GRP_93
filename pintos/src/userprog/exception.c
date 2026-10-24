@@ -4,6 +4,7 @@
 #include "userprog/gdt.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "threads/vaddr.h"
 #include "vm/page.h"
 
 /* Number of page faults processed. */
@@ -90,6 +91,7 @@ kill (struct intr_frame *f)
       printf ("%s: dying due to interrupt %#04x (%s).\n",
               thread_name (), f->vec_no, intr_name (f->vec_no));
       intr_dump_frame (f);
+      thread_current ()->exit_code = -1;
       thread_exit (); 
 
     case SEL_KCSEG:
@@ -141,19 +143,22 @@ page_fault (struct intr_frame *f)
      be assured of reading CR2 before it changed). */
   intr_enable ();
 
+  /* Count page faults. */
+  page_fault_cnt++;
 
-  /* TODO: Determine cause of fault
-       - not_present: page not present
-       - write: access was a write
-       - user: access by user
-   */
+  /* Determine cause of fault */
+  not_present = (f->error_code & PF_P) == 0;
+  write = (f->error_code & PF_W) != 0;
+  user = (f->error_code & PF_U) != 0;
 
-   /* TODO: Implement demand paging here
-       - Call your page_in() or similar
-       - Allocate stack pages if necessary
-       - Evict pages if needed
-       - Return to user if successful
-    */
+  if (user)
+    thread_current ()->user_esp = f->esp;
+
+  if (not_present && is_user_vaddr (fault_addr))
+    {
+      if (page_in (fault_addr))
+        return;
+    }
 
   printf ("Page fault at %p: %s error %s page in %s context.\n",
           fault_addr,

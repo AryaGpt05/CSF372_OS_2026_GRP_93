@@ -49,6 +49,8 @@ syscall_init (void)
 static void
 syscall_handler (struct intr_frame *f)
 {
+  thread_current ()->user_esp = f->esp;
+
   typedef int syscall_function (int, int, int);
 
   /* A system call. */
@@ -85,7 +87,7 @@ syscall_handler (struct intr_frame *f)
   /* Get the system call. */
   copy_in (&call_nr, f->esp, sizeof call_nr);
   if (call_nr >= sizeof syscall_table / sizeof *syscall_table)
-    thread_exit ();
+    sys_exit (-1);
   sc = syscall_table + call_nr;
 
   /* Get the system call arguments. */
@@ -114,7 +116,7 @@ copy_in (void *dst_, const void *usrc_, size_t size)
         chunk_size = size;
 
       if (!page_lock (usrc, false))
-        thread_exit ();
+        sys_exit (-1);
       memcpy (dst, usrc, chunk_size);
       page_unlock (usrc);
 
@@ -138,7 +140,7 @@ copy_in_string (const char *us)
 
   ks = palloc_get_page (0);
   if (ks == NULL)
-    thread_exit ();
+    sys_exit (-1);
 
   length = 0;
   for (;;)
@@ -166,7 +168,7 @@ copy_in_string (const char *us)
   page_unlock (upage);
  lock_error:
   palloc_free_page (ks);
-  thread_exit ();
+  sys_exit (-1);
 }
 
 /* Halt system call. */
@@ -294,7 +296,7 @@ lookup_fd (int handle)
         return fd;
     }
 
-  thread_exit ();
+  sys_exit (-1);
 }
 
 /* Filesize system call. */
@@ -331,7 +333,7 @@ sys_read (int handle, void *udst_, unsigned size)
       if (handle != STDIN_FILENO)
         {
           if (!page_lock (udst, true))
-            thread_exit ();
+            sys_exit (-1);
           lock_acquire (&fs_lock);
           retval = file_read (fd->file, udst, read_amt);
           lock_release (&fs_lock);
@@ -345,7 +347,7 @@ sys_read (int handle, void *udst_, unsigned size)
             {
               char c = input_getc ();
               if (!page_lock (udst, true))
-                thread_exit ();
+                sys_exit (-1);
               udst[i] = c;
               page_unlock (udst);
             }
@@ -395,7 +397,7 @@ sys_write (int handle, void *usrc_, unsigned size)
 
       /* Write from page into file. */
       if (!page_lock (usrc, false))
-        thread_exit ();
+        sys_exit (-1);
       lock_acquire (&fs_lock);
       if (handle == STDOUT_FILENO)
         {
@@ -496,7 +498,7 @@ lookup_mapping (int handle)
         return m;
     }
 
-  thread_exit ();
+  sys_exit (-1);
 }
 
 /* Remove mapping M from the virtual address space,

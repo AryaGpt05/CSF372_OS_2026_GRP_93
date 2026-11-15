@@ -163,6 +163,13 @@ fact that the client runs its commands strictly in sequence. Because the
 server releases a client's locks on `DISCONNECT` (and only the editor can
 `UNLOCK`), a client that exits early can never leave a word locked forever.
 
+To optimize disconnect performance, each `client_slot` tracks the coordinates
+of cells currently held by that client. On client exit, `release_all_locks`
+performs an $O(1)$ check: if `held_count == 0` (the typical case where all
+edits finished cleanly), it returns immediately without scanning or acquiring
+rwlocks across the 100 document cells. If a client disconnected mid-edit, it
+unlocks only the recorded cells.
+
 ### 3.6 Validation
 
 The client rejects malformed lines (bad coordinates, words > 64 chars,
@@ -190,7 +197,8 @@ others are still starting.
 `pthread_sigmask` **before** any thread is created, so every thread inherits
 the mask. Only the dedicated signal thread receives them, via `sigwait`. It
 runs as a normal thread, not inside an async signal handler, so it can safely
-take each word's rwlock, write `output.txt` with stdio, and call `exit(0)`.
+take each word's rwlock, write `output.txt` with stdio, call `doc_destroy()`
+to destroy all synchronizers, and call `exit(0)`.
 
 `output.txt` format: for each line, non-empty words joined by single spaces.
 Lines with no words are skipped.
@@ -199,15 +207,17 @@ Lines with no words are skipped.
 
 ### 4.1 Main thread
 
-1. Connect (§2.3).
-2. Start the print_doc thread.
-3. Read `input.txt` line by line. Skip lines whose `C<id>` isn't ours, and run
+1. Trap `SIGINT` and `SIGTERM` via `sigaction` to clean up message queues on
+   early interruption.
+2. Connect (§2.3).
+3. Start the print_doc thread.
+4. Read `input.txt` line by line. Skip lines whose `C<id>` isn't ours, and run
    the rest **sequentially**:
    * `READ x y` → log the request; print `SUCCESS - Value: '<w>'` or `DROPPED`.
    * `WRITE x y w t` → on grant, log `sleeping for t ms`, sleep, send `UNLOCK`,
      then log `COMPLETED`. On deny, log `DROPPED`.
    * `SLEEP t` → `nanosleep`.
-4. Stop the print_doc thread, `DISCONNECT`, unlink queues, and exit.
+5. Stop the print_doc thread, `DISCONNECT`, unlink queues, and exit.
 
 ### 4.2 print_doc thread
 
@@ -234,6 +244,7 @@ Lines with no words are skipped.
 | Deadlock                                    | Each operation takes one word's lock (shutdown/disconnect take them one at a time). No lock is held across I/O or sleep. |
 | Replies delivered to the wrong client thread | Separate reply queue per client thread (§2.5).                                             |
 | Request sent before the handler exists      | The client waits for the `CONNECT` ACK.                                                    |
-| Client crash while holding an edit          | Locks are released on `DISCONNECT`. Clients use reply timeouts so they never hang.         |
+| Client crash while holding an edit          | Locks are tracked per client slot for O(1) disconnect checks, and released on `DISCONNECT`. Clients use reply timeouts so they never hang. |
+| Signal arrives at client process            | Caught via `sigaction`, unlinks `/dev/mqueue` queues before termination.                    |
 | Signal arrives at an arbitrary thread       | Signals are blocked everywhere except the `sigwait` thread.                                |
 | Stale queues from earlier runs              | Each side `mq_unlink`s its queue names before creating them.                               |

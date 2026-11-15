@@ -103,6 +103,9 @@ struct client_slot {
     mqd_t req_q;
     mqd_t reply_q;
     mqd_t doc_q;
+    int held_count;
+    int held_x[GRID_SIZE * GRID_SIZE];
+    int held_y[GRID_SIZE * GRID_SIZE];
 };
 
 static struct client_slot clients[MAX_CLIENTS];
@@ -129,6 +132,7 @@ static void doc_init(void) {
     for (int c = 0; c < MAX_CLIENTS; c++) {
         pthread_mutex_init(&clients[c].lock, NULL);
         clients[c].active = 0;
+        clients[c].held_count = 0;
     }
 }
 
@@ -174,6 +178,13 @@ static void handle_write(int cid, struct osdoc_msg *m) {
     pthread_rwlock_unlock(&c->lock);
 
     if (m->status == ST_OK) {
+        struct client_slot *slot = &clients[cid];
+        pthread_mutex_lock(&slot->lock);
+        slot->held_x[slot->held_count] = m->x;
+        slot->held_y[slot->held_count] = m->y;
+        slot->held_count++;
+        pthread_mutex_unlock(&slot->lock);
+
         printf("Server: Client %d WRITE LOCK(%d,%d) GRANTED\n", cid, m->x, m->y);
         printf("Server: Client %d WRITE(%d,%d) = '%s', locked for %dms\n",
                cid, m->x, m->y, m->word, m->duration_ms);
@@ -193,29 +204,52 @@ static void handle_unlock(int cid, struct osdoc_msg *m) {
     }
     pthread_rwlock_unlock(&c->lock);
 
-    if (m->status == ST_OK)
+    if (m->status == ST_OK) {
+        struct client_slot *slot = &clients[cid];
+        pthread_mutex_lock(&slot->lock);
+        for (int k = 0; k < slot->held_count; k++) {
+            if (slot->held_x[k] == m->x && slot->held_y[k] == m->y) {
+                slot->held_x[k] = slot->held_x[slot->held_count - 1];
+                slot->held_y[k] = slot->held_y[slot->held_count - 1];
+                slot->held_count--;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&slot->lock);
+
         printf("Server: Client %d UNLOCK(%d,%d)\n", cid, m->x, m->y);
-    else
+    } else {
         printf("Server: Client %d UNLOCK(%d,%d) IGNORED (not the editor)\n", cid, m->x, m->y);
+    }
 }
 
 // Release every edit lock held by a client (used when it disconnects so a
 // crashed / exiting client can never leave a word locked forever).
+// Uses client_slot tracked locks for an O(1) check when no locks are held.
 static void release_all_locks(int cid) {
-    for (int i = 0; i < GRID_SIZE; i++) {
-        for (int j = 0; j < GRID_SIZE; j++) {
-            struct cell *c = &doc[i][j];
-            pthread_rwlock_wrlock(&c->lock);
-            int released = 0;
-            if (c->editor == cid) {
-                c->editor = -1;
-                released = 1;
-            }
-            pthread_rwlock_unlock(&c->lock);
-            if (released)
-                printf("Server: Client %d UNLOCK(%d,%d) (released on disconnect)\n", cid, i, j);
-        }
+    struct client_slot *slot = &clients[cid];
+    pthread_mutex_lock(&slot->lock);
+    if (slot->held_count == 0) {
+        pthread_mutex_unlock(&slot->lock);
+        return;
     }
+
+    for (int k = 0; k < slot->held_count; k++) {
+        int x = slot->held_x[k];
+        int y = slot->held_y[k];
+        struct cell *c = &doc[x][y];
+        pthread_rwlock_wrlock(&c->lock);
+        int released = 0;
+        if (c->editor == cid) {
+            c->editor = -1;
+            released = 1;
+        }
+        pthread_rwlock_unlock(&c->lock);
+        if (released)
+            printf("Server: Client %d UNLOCK(%d,%d) (released on disconnect)\n", cid, x, y);
+    }
+    slot->held_count = 0;
+    pthread_mutex_unlock(&slot->lock);
 }
 
 /* ---------------------------- per-client thread ------------------------- */
@@ -370,6 +404,19 @@ static void write_output(const char *path) {
     fclose(fp);
 }
 
+// Cleanly destroy synchronizers on shutdown for resource hygiene.
+static void doc_destroy(void) {
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            pthread_rwlock_destroy(&doc[i][j].lock);
+        }
+    }
+    for (int c = 0; c < MAX_CLIENTS; c++) {
+        pthread_mutex_destroy(&clients[c].lock);
+    }
+    pthread_mutex_destroy(&count_lock);
+}
+
 // Writes output.txt, removes the control queue and exits. Serialised so the
 // signal thread and the idle-shutdown path can never run it twice.
 static void shutdown_server(const char *reason) {
@@ -382,6 +429,7 @@ static void shutdown_server(const char *reason) {
 
     mq_close(server_q);
     mq_unlink(SERVER_QUEUE);
+    doc_destroy();
     printf("Server: Shutdown complete\n");
     exit(0);
 }
@@ -469,7 +517,9 @@ int main() {
 
     // Only reached on a fatal queue error.
     write_output("output.txt");
+    mq_close(server_q);
     mq_unlink(SERVER_QUEUE);
+    doc_destroy();
     printf("Server: Shutdown complete\n");
     return 0;
 }

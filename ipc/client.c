@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <fcntl.h>
 #include <mqueue.h>
+#include <signal.h>
 
 #define GRID_SIZE 10
 #define MAX_STRING_LEN 64
@@ -161,10 +162,12 @@ static void snapshot_doc(void) {
             else if (m.status == ST_OK) w = m.word;
             else w = "";
             if (w[0] == '\0') continue;
-            len += snprintf(buf + len, sizeof(buf) - len, "%s%s", printed ? " " : "", w);
-            printed = 1;
+            if (len + strlen(w) + 2 < sizeof(buf)) {
+                len += snprintf(buf + len, sizeof(buf) - len, "%s%s", printed ? " " : "", w);
+                printed = 1;
+            }
         }
-        if (printed) len += snprintf(buf + len, sizeof(buf) - len, "\n");
+        if (printed && len + 1 < sizeof(buf)) len += snprintf(buf + len, sizeof(buf) - len, "\n");
     }
     print_doc(buf);
 }
@@ -316,6 +319,13 @@ static void cleanup_queues(void) {
     mq_unlink(doc_name);
 }
 
+// Clean up POSIX queues if the process is terminated prematurely.
+static void client_sig_handler(int sig) {
+    (void)sig;
+    cleanup_queues();
+    _exit(128 + sig);
+}
+
 static int connect_to_server(void) {
     snprintf(req_name, sizeof(req_name), "/client_queue_%d_req", my_id);
     snprintf(reply_name, sizeof(reply_name), "/client_queue_%d", my_id);
@@ -362,6 +372,14 @@ int main(int argc, char* argv[]) {
     int client_id = atoi(argv[1]);
     client_id_global = client_id;
     my_id = client_id;
+
+    // Trap interruption signals so message queues in /dev/mqueue are not orphaned
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = client_sig_handler;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+
     printf("Client %d: Starting\n", client_id);
 
     if (client_id < 0 || client_id > 9) {
